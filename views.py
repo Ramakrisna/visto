@@ -1,10 +1,11 @@
 from tornado.web import RequestHandler
-from tornado_sqlalchemy import SessionMixin
+from tornado_sqlalchemy import SessionMixin, as_future
 from tornado.httpclient import AsyncHTTPClient
 from models import Urls
 import bs4
 import re
-import urllib.parse
+from urllib.parse import urlparse
+import validators
 
 TAGS = ['a', 'applet', 'area', 'base', 'blockquote', 'body', 'del', 'form', 'frame', 'head', 'iframe', 'img',
         'input', 'ins', 'link', 'object', 'q', 'script', 'audio', 'button', 'command', 'embed', 'html', 'input',
@@ -12,6 +13,12 @@ TAGS = ['a', 'applet', 'area', 'base', 'blockquote', 'body', 'del', 'form', 'fra
 ATTRIBUTES = {'href', 'codebase', 'cite', 'background', 'action', 'longdesc', 'profile', 'src', 'usemap', 'classid',
               'data', 'formaction', 'icon', 'manifest', 'poster', 'srcset', 'archive'}
 PATTERN = '^(https?:\/\/|\/)'
+
+
+def validate_url(url):
+    parsed_url = urlparse(url)
+    if not all([parsed_url.scheme, parsed_url.netloc]):
+        raise ValueError('The specified URL is not valid, please enter a valid URL including scheme')
 
 
 class URLParserHandler(RequestHandler, SessionMixin):
@@ -24,7 +31,8 @@ class URLParserHandler(RequestHandler, SessionMixin):
     async def get(self):
         with self.make_session() as session:
             self.url = self.get_argument('url')
-            self.clean_url = f'{urllib.parse.urlparse(self.url).scheme}://{urllib.parse.urlparse(self.url).netloc}'
+            validate_url(self.url)
+            self.clean_url = f'{urlparse(self.url).scheme}://{urlparse(self.url).netloc}'
             http = AsyncHTTPClient()
             response = await http.fetch(self.url)
             if response:
@@ -42,13 +50,16 @@ class URLParserHandler(RequestHandler, SessionMixin):
                 break
 
     def build_url_for_insertion(self, tag, attribute_dict, url_attribute):
-        parsed_url = urllib.parse.urlparse(attribute_dict[url_attribute])
-        full_url = f'{attribute_dict[url_attribute]}' if parsed_url.scheme else f'{self.clean_url}{parsed_url.path}'
+        parsed_url = urlparse(attribute_dict[url_attribute])
+        if parsed_url.scheme:
+            full_url = f'{self.clean_url}{parsed_url.path}'
+        else:
+            full_url = attribute_dict[url_attribute].split('?')[0]
         get_tag = self.build_tag_retrieval(attribute_dict, tag.name)
         if full_url not in self.urls_set:
             self.urls_set.add(full_url)
             self.url_tags.append(Urls(from_domain=self.url,
-                                      full_url=full_url,
+                                      complete_url=full_url,
                                       get_tag=get_tag))
 
     @staticmethod
@@ -59,3 +70,28 @@ class URLParserHandler(RequestHandler, SessionMixin):
         for attribute in attribute_dict:
             tag_retrieval += f'[{attribute}="{attribute_dict[attribute]}"]'
         return tag_retrieval
+
+
+class ExtractElement(RequestHandler, SessionMixin):
+    def initialize(self):
+        self.url = ''
+        self.uri = ''
+
+    async def get(self):
+        with self.make_session() as session:
+            params = self.request.arguments
+            if 'url' not in params or 'uri' not in params:
+                raise ValueError(
+                    'Please specify the domain you want to extract the URI from as well as the complete URI')
+            self.url = params['url'][0].decode('utf-8')
+            self.uri = params['uri'][0].decode('utf-8')
+            validate_url(self.url)
+            validate_url(self.uri)
+            get_tag = session.query(Urls).filter(Urls.from_domain == self.url).filter(
+                Urls.complete_url == self.uri).first()
+            if get_tag:
+                http = AsyncHTTPClient()
+                response = await http.fetch(self.url)
+                if response:
+                    soup = bs4.BeautifulSoup(response.body)
+                    return str(soup.find(get_tag))

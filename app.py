@@ -1,5 +1,5 @@
 from tornado.options import define, options
-from views import URLParserHandler
+from views import URLParserHandler, ExtractElement
 from models import DB
 import tornado.httpserver
 import tornado.ioloop
@@ -15,7 +15,7 @@ def main():
     application = tornado.web.Application(
         handlers=[
             ("/parse_url", URLParserHandler),
-            # ("/add_user", ExtractElement)
+            ("/extract_elements", ExtractElement)
         ],
         db=DB)
     http_server = tornado.httpserver.HTTPServer(application)
